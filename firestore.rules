@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function getRole() {
+      return get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role;
+    }
+
+    function isPrincipal() {
+      return isSignedIn() 
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid)) 
+        && getRole() == 'principal';
+    }
+
+    function isTeacher() {
+      return isSignedIn() 
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid)) 
+        && getRole() == 'teacher';
+    }
+
+    function isParent() {
+      return isSignedIn() 
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid)) 
+        && getRole() == 'parent';
+    }
+
+    // 3. Standalone Schema Validation Helpers
+    function isValidStudent(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 200
+        && data.grade is string && data.grade.size() <= 50
+        && data.section is string && data.section.size() <= 10;
+    }
+
+    function isValidGrade(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.studentId is string && data.studentId.size() <= 128
+        && data.studentName is string && data.studentName.size() <= 200
+        && data.subject is string && data.subject.size() <= 100
+        && data.quiz is number && data.quiz >= 0 && data.quiz <= 100
+        && data.cw is number && data.cw >= 0 && data.cw <= 100
+        && data.hw is number && data.hw >= 0 && data.hw <= 100
+        && data.mid is number && data.mid >= 0 && data.mid <= 100
+        && data.final is number && data.final >= 0 && data.final <= 100
+        && data.total is number && data.total >= 0 && data.total <= 500
+        && data.teacher is string && data.teacher.size() <= 200;
+    }
+
+    function isValidTeacher(data) {
+      return data.email is string && data.email.size() <= 200
+        && data.name is string && data.name.size() <= 200;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 200
+        && data.content is string && data.content.size() <= 2000;
+    }
+
+    function isValidClass(data) {
+      return data.grade is string && data.grade.size() <= 50
+        && data.section is string && data.section.size() <= 10;
+    }
+
+    function isValidUserRole(data) {
+      return data.role in ['principal', 'teacher', 'parent']
+        && data.email is string && data.email.size() <= 200;
+    }
+
+    // 4. Collection-Specific Match Blocks
+
+    // User Roles Configuration Map
+    match /userRoles/{userId} {
+      allow read: if isSignedIn() && (userId == request.auth.uid || isPrincipal());
+      allow write: if isPrincipal() && isValidUserRole(incoming()) && isValidId(userId);
+    }
+
+    // Students Collection
+    match /students/{studentId} {
+      allow read: if isSignedIn() && (isPrincipal() || isTeacher() || (isParent() && studentId == request.auth.uid));
+      allow create, update: if isPrincipal() && isValidStudent(incoming()) && isValidId(studentId);
+      allow delete: if isPrincipal();
+    }
+
+    // Grades Collection
+    match /grades/{gradeId} {
+      allow read: if isSignedIn() && (
+        isPrincipal() 
+        || isTeacher() 
+        || (isParent() && resource.data.studentId == request.auth.uid)
+      );
+      allow create, update: if (isTeacher() || isPrincipal()) && isValidGrade(incoming()) && isValidId(gradeId);
+      allow delete: if isPrincipal() || isTeacher();
+    }
+
+    // Faculty Directory
+    match /teachers/{teacherId} {
+      allow read: if isSignedIn();
+      allow create, update: if isPrincipal() && isValidTeacher(incoming()) && isValidId(teacherId);
+      allow delete: if isPrincipal();
+    }
+
+    // Announcements Notice Board
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow create, update: if isPrincipal() && isValidAnnouncement(incoming()) && isValidId(announcementId);
+      allow delete: if isPrincipal();
+    }
+
+    // Academic Classes Setup
+    match /classes/{classId} {
+      allow read: if isSignedIn();
+      allow create, update: if isPrincipal() && isValidClass(incoming()) && isValidId(classId);
+      allow delete: if isPrincipal();
+    }
+
+  }
+}
